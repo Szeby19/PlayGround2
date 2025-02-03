@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>#racse</title>
+    <style>
+        canvas {
+            background-image: url(./ut.gif);
+            display: block;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="960" height="600"></canvas>
+<li><a href="/main.html">Back</a></li>
+
+<!-- Zene -->
+<audio id="backgroundMusic" loop>
+    <source src="mcisti.ogg" type="audio/ogg">
+    Your browser does not support the audio element.
+</audio>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Színek és képernyő beállítások
+    const BLACK = '#000000';
+    const RED = '#FF0000';
+    const wn_width = canvas.width;
+    const wn_height = canvas.height;
+
+    const west_b = 270;
+    const east_b = wn_width - 270;
+
+    // Zene inicializálása
+    const music = document.getElementById('backgroundMusic');
+
+    let carImg = new Image();
+    carImg.src = 'porsche.png';  // Kép forrása
+    let carWidth = 50;
+    let carHeight = 100;
+
+    // Billentyűk figyelése
+    let keys = {
+        ArrowLeft: false,
+        ArrowRight: false
+    };
+
+    // Billentyűlenyomás és felengedés események kezelése
+    window.addEventListener('keydown', (e) => {
+        if (keys.hasOwnProperty(e.key)) {
+            keys[e.key] = true;
+        }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        if (keys.hasOwnProperty(e.key)) {
+            keys[e.key] = false;
+        }
+    });
+
+    // Akadály (Block) osztály
+    class Block {
+        constructor(x, y, width, height) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+            this.gap = 80;
+            this.speedy = 3;
+            this.passed = 0;  // Áthaladt akadályok száma
+        }
+
+        update() {
+            this.y += this.speedy;
+            if (this.y > wn_height) {
+                this.y = 0 - this.height;
+                this.width = Math.floor(Math.random() * (110 - 10 + 1)) + 10;
+                this.passed += 1;
+            }
+        }
+
+        draw() {
+            ctx.fillStyle = RED;
+            ctx.fillRect(this.x, this.y, this.width, this.height);
+            let right_blk_x = this.x + this.width + this.gap;
+            let right_blk_width = east_b - right_blk_x;
+            if (right_blk_width > 0) {
+                ctx.fillRect(right_blk_x, this.y, right_blk_width, this.height);
+            }
+        }
+    }
+
+    // Játékos (Player) osztály
+    class Player {
+        constructor() {
+            this.image = carImg;
+            this.width = carWidth;
+            this.height = carHeight;
+            this.x = wn_width / 2 - this.width / 2;
+            this.y = wn_height / 2 - this.height / 2;
+            this.speedx = 0;
+        }
+
+        update() {
+            if (keys.ArrowLeft) {
+                this.speedx = -5;
+            } else if (keys.ArrowRight) {
+                this.speedx = 5;
+            } else {
+                this.speedx = 0;
+            }
+
+            this.x += this.speedx;
+
+            if (this.x < west_b) {
+                this.x = west_b;
+            }
+            if (this.x + this.width > east_b) {
+                this.x = east_b - this.width;
+            }
+        }
+
+        draw() {
+            ctx.drawImage(this.image, this.x, this.y, this.width, this.height);
+        }
+    }
+
+    // Pontszámláló
+    function scoreBoard(passed) {
+        ctx.fillStyle = BLACK;
+        ctx.font = "30px Arial";
+        ctx.fillText("Áthaladt akadályok: " + passed, 10, 30);
+    }
+
+    // Játék ciklus
+    function gameLoop() {
+        let block = new Block(west_b, -100, 30, 20);
+        let player = new Player();
+
+        // Zene indítása
+        music.play();
+
+        function loop() {
+            ctx.clearRect(0, 0, wn_width, wn_height);
+
+            // Akadály és játékos frissítése és rajzolása
+            player.update();
+            player.draw();
+            block.update();
+            block.draw();
+
+            // Pontszám megjelenítése
+            scoreBoard(block.passed);
+
+            // Ütközésvizsgálat
+            if ((player.x < block.x + block.width || player.x + player.width > block.x + block.width + block.gap) &&
+                player.y < block.y + block.height && player.y + player.height > block.y) {
+                crash();
+            }
+
+            requestAnimationFrame(loop);  // Ismételt játékciklus
+        }
+
+        loop();
+    }
+
+    // Crash képernyő megjelenítése
+    function crash() {
+        music.pause();  // Zene leállítása ütközésnél
+        ctx.fillStyle = BLACK;
+        ctx.font = "80px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("Norbert Stu megölte McIstit", wn_width / 2, wn_height / 2);
+        location.reload();
+    }
+
+    // Játék indítása
+    carImg.onload = function() {
+        gameLoop();
+    };
+</script>
+</body>
+</html>

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tank vs Tank</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body {
+      background: #333;
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      background: #555;
+      border: 4px solid #222;
+    }
+  </style>
+
+
+
+</head>
+<body>
+
+
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <script>
+    // Canvas beállítása
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    // Hang lejátszásához: Gondoskodj róla, hogy a hit.mp3 fájl elérhető legyen!
+    const hitSound = new Audio('hit.mp3');
+
+    // Billentyű lenyomások nyomon követése
+    const keys = {};
+    document.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      // Ha a játék véget ért, a space lenyomásával indul új meccs
+      if (gameOver && e.key === " ") {
+        initGame();
+      }
+    });
+    document.addEventListener('keyup', e => keys[e.key] = false);
+
+    // Játék állapotváltozók
+    let gameOver = false;
+    let winner = "";
+
+    // Globális változók a tankok, lövedékek és akadályok számára
+    let tank1, tank2;
+    let bullets = [];
+    let obstacles = [];
+
+    // Segédfüggvény: Kör és téglalap ütközésvizsgálata
+    function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
+      const nearestX = Math.max(rx, Math.min(cx, rx + rw));
+      const nearestY = Math.max(ry, Math.min(cy, ry + rh));
+      const dx = cx - nearestX;
+      const dy = cy - nearestY;
+      return (dx * dx + dy * dy) < (r * r);
+    }
+
+    // Kör-kör ütközésvizsgálat
+    function circleCollision(x1, y1, r1, x2, y2, r2) {
+      const dx = x1 - x2;
+      const dy = y1 - y2;
+      return (dx * dx + dy * dy) < ((r1 + r2) * (r1 + r2));
+    }
+
+    // Obstacle osztály
+    class Obstacle {
+      constructor(x, y, width, height, color = "#444") {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+        this.color = color;
+      }
+
+      draw(ctx) {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+      }
+    }
+
+    // Preset pályák – minden pálya egy tömb akadálydefiníciókkal
+    const presetMaps = [
+      // Pálya 1: Keretes pálya, középen néhány akadállyal
+      [
+        { x: 0,   y: 0,   width: 800, height: 20 },      // felső keret
+        { x: 0,   y: 580, width: 800, height: 20 },       // alsó keret
+        { x: 0,   y: 0,   width: 20,  height: 600 },       // bal oldali keret
+        { x: 780, y: 0,   width: 20,  height: 600 },       // jobb oldali keret
+        { x: 350, y: 250, width: 100, height: 20 }         // középső akadály
+      ],
+      // Pálya 2: Nyitott pálya, véletlenszerű elhelyezésű akadályok
+      [
+        { x: 150, y: 100, width: 100, height: 20 },
+        { x: 550, y: 100, width: 20,  height: 150 },
+        { x: 300, y: 400, width: 200, height: 20 },
+        { x: 100, y: 300, width: 20,  height: 150 },
+        { x: 600, y: 350, width: 150, height: 20 }
+      ],
+      // Pálya 3: Komplexabb elrendezés
+      [
+        { x: 0,   y: 0,   width: 800, height: 20 },     // felső keret
+        { x: 0,   y: 580, width: 800, height: 20 },      // alsó keret
+        { x: 0,   y: 0,   width: 20,  height: 600 },      // bal oldali keret
+        { x: 780, y: 0,   width: 20,  height: 600 },      // jobb oldali keret
+        { x: 200, y: 200, width: 20,  height: 200 },
+        { x: 580, y: 200, width: 20,  height: 200 },
+        { x: 350, y: 100, width: 100, height: 20 },
+        { x: 350, y: 480, width: 100, height: 20 }
+      ]
+    ];
+
+    // Véletlenszerű pálya generálása egy preset tömb alapján
+    function generateObstacles() {
+      const mapIndex = Math.floor(Math.random() * presetMaps.length);
+      const map = presetMaps[mapIndex];
+      const obs = [];
+      for (let def of map) {
+        obs.push(new Obstacle(def.x, def.y, def.width, def.height, def.color));
+      }
+      return obs;
+    }
+
+    // Tank osztály
+    class Tank {
+      constructor(x, y, angle, color, controls) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle; // radiánban
+        this.color = color;
+        this.controls = controls; // { forward, backward, left, right, fire }
+        this.speed = 2.0;
+        this.rotationSpeed = 0.04;
+        this.size = 30;          // a tank testének mérete (körként kezeljük ütközésvizsgálathoz)
+        this.turretLength = 25;  // a torony hossza
+        this.fireCooldown = 0;   // lőzési késleltetés (frame-ben mérve)
+        this.hp = 3;             // életpontok
+        this.alive = true;       // ha false, a tank "meghalt"
+      }
+
+      update() {
+        if (!this.alive || gameOver) return;
+
+        // Előző pozíció elmentése az ütközésvizsgálathoz
+        let oldX = this.x;
+        let oldY = this.y;
+
+        // Mozgás
+        if (keys[this.controls.forward]) {
+          this.x += Math.cos(this.angle) * this.speed;
+          this.y += Math.sin(this.angle) * this.speed;
+        }
+        if (keys[this.controls.backward]) {
+          this.x -= Math.cos(this.angle) * this.speed;
+          this.y -= Math.sin(this.angle) * this.speed;
+        }
+        if (keys[this.controls.left]) {
+          this.angle -= this.rotationSpeed;
+        }
+        if (keys[this.controls.right]) {
+          this.angle += this.rotationSpeed;
+        }
+
+        // Megakadályozzuk, hogy a tank kilépjen a canvas területéről
+        this.x = Math.max(0, Math.min(canvas.width, this.x));
+        this.y = Math.max(0, Math.min(canvas.height, this.y));
+
+        // Ütközésvizsgálat az akadályokkal – ha ütközés van, visszaállítjuk az előző pozícióra
+        for (let obs of obstacles) {
+          if (circleRectCollision(this.x, this.y, this.size / 2, obs.x, obs.y, obs.width, obs.height)) {
+            this.x = oldX;
+            this.y = oldY;
+            break;
+          }
+        }
+
+        // Lőzési késleltetés csökkentése
+        if (this.fireCooldown > 0) {
+          this.fireCooldown--;
+        }
+        // Lövés
+        if (keys[this.controls.fire] && this.fireCooldown === 0) {
+          bullets.push(new Bullet(
+            this.x + Math.cos(this.angle) * (this.size / 2 + this.turretLength),
+            this.y + Math.sin(this.angle) * (this.size / 2 + this.turretLength),
+            this.angle,
+            this.color
+          ));
+          this.fireCooldown = 60; // kb. 1 másodperc 60 fps esetén
+        }
+      }
+
+      draw(ctx) {
+        if (!this.alive) return; // ha a tank meghalt, nem rajzoljuk
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        // Tank teste
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+        // Tank tornya (egy vékony téglalap)
+        ctx.fillStyle = "#888";
+        ctx.fillRect(0, -5, this.turretLength, 10);
+        // HP kijelzése a tank felett
+        ctx.fillStyle = "white";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("HP: " + this.hp, 0, -this.size / 2 - 10);
+        ctx.restore();
+      }
+    }
+
+    // Bullet (golyó) osztály, mely kis sebességvektort és pattogási számot tartalmaz
+    class Bullet {
+      constructor(x, y, angle, color) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle;
+        this.speed = 4;
+        this.radius = 4;
+        this.color = color;
+        this.active = true;
+        this.bounceCount = 0;
+        // Sebesség komponensek
+        this.vx = Math.cos(angle) * this.speed;
+        this.vy = Math.sin(angle) * this.speed;
+        // Az akadályhoz való ütközés elkerülése ismételt pattogás miatt
+        this.collidingObstacle = false;
+      }
+
+      update() {
+        if (!this.active || gameOver) return;
+        // Pozíció frissítése
+        this.x += this.vx;
+        this.y += this.vy;
+
+        // Pattogás a canvas határain
+        let bounced = false;
+        if (this.x - this.radius < 0) {
+          this.x = this.radius;
+          this.vx = -this.vx;
+          bounced = true;
+        }
+        if (this.x + this.radius > canvas.width) {
+          this.x = canvas.width - this.radius;
+          this.vx = -this.vx;
+          bounced = true;
+        }
+        if (this.y - this.radius < 0) {
+          this.y = this.radius;
+          this.vy = -this.vy;
+          bounced = true;
+        }
+        if (this.y + this.radius > canvas.height) {
+          this.y = canvas.height - this.radius;
+          this.vy = -this.vy;
+          bounced = true;
+        }
+        if (bounced) {
+          this.bounceCount++;
+          if (this.bounceCount > 3) {
+            this.active = false;
+          }
+        }
+
+        // Pattogás az akadályokról
+        for (let obs of obstacles) {
+          if (this.x > obs.x && this.x < obs.x + obs.width &&
+              this.y > obs.y && this.y < obs.y + obs.height) {
+            if (!this.collidingObstacle) {
+              // Egyszerű megoldásként: fordítjuk mindkét komponensét
+              this.vx = -this.vx;
+              this.vy = -this.vy;
+              this.bounceCount++;
+              if (this.bounceCount > 3) {
+                this.active = false;
+              }
+              this.collidingObstacle = true;
+            }
+          } else {
+            this.collidingObstacle = false;
+          }
+        }
+      }
+
+      draw(ctx) {
+        if (!this.active) return;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, 2 * Math.PI);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+      }
+    }
+
+    // A játék alapállapotának beállítása és új pálya generálása
+    function initGame() {
+      gameOver = false;
+      winner = "";
+      bullets = [];
+      obstacles = generateObstacles();
+
+      // Bal oldali tank: kék, lövéshez az "m" billentyűt használja.
+      tank1 = new Tank(100, 100, 0, "blue", {
+        forward: "ArrowUp",
+        backward: "ArrowDown",
+        left: "ArrowLeft",
+        right: "ArrowRight",
+        fire: "m"
+      });
+      // Jobb oldali tank: piros, lövéshez a szóköz billentyűt használja.
+      tank2 = new Tank(700, 500, Math.PI, "red", {
+        forward: "w",
+        backward: "s",
+        left: "a",
+        right: "d",
+        fire: " "  // szóköz a lövéshez
+      });
+    }
+
+    // Játék frissítő ciklus
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function update() {
+      if (gameOver) return;
+
+      tank1.update();
+      tank2.update();
+
+      // Lövedékek frissítése és törlése, ha inaktívak
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].update();
+        if (!bullets[i].active) {
+          bullets.splice(i, 1);
+        }
+      }
+
+      // Ütközésvizsgálat: ha egy lövedék eltalálja az ellenfél tankját,
+      // csökkentjük az életpontját, lejátszódik a hang, és a lövedék eltűnik.
+      for (let b of bullets) {
+        // Blue tank (bal, kék):
+        if (b.color !== tank1.color && tank1.alive &&
+            circleCollision(b.x, b.y, b.radius, tank1.x, tank1.y, tank1.size / 2)) {
+          tank1.hp--;
+          console.log("Blue tank találatot kapott! HP: " + tank1.hp);
+          hitSound.play();
+          b.active = false;
+          if (tank1.hp <= 0) {
+            tank1.alive = false;
+            console.log("Blue tank megsemmisült!");
+          }
+        }
+        // Red tank (jobb, piros):
+        if (b.color !== tank2.color && tank2.alive &&
+            circleCollision(b.x, b.y, b.radius, tank2.x, tank2.y, tank2.size / 2)) {
+          tank2.hp--;
+          console.log("Red tank találatot kapott! HP: " + tank2.hp);
+          hitSound.play();
+          b.active = false;
+          if (tank2.hp <= 0) {
+            tank2.alive = false;
+            console.log("Red tank megsemmisült!");
+          }
+        }
+      }
+
+      // Ha valamelyik tank meghalt, állítsuk be a gameOver változót, és határozzuk meg a győztest
+      if (!tank1.alive || !tank2.alive) {
+        gameOver = true;
+        if (tank1.alive && !tank2.alive) {
+          winner = "Kék nyert!";
+        } else if (tank2.alive && !tank1.alive) {
+          winner = "Piros nyert!";
+        } else {
+          winner = "Döntetlen!";
+        }
+      }
+    }
+
+    function draw() {
+      // Canvas törlése
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Akadályok rajzolása
+      obstacles.forEach(obs => obs.draw(ctx));
+
+      // Tankok rajzolása
+      tank1.draw(ctx);
+      tank2.draw(ctx);
+
+      // Lövedékek rajzolása
+      bullets.forEach(b => b.draw(ctx));
+
+      // Ha a játék véget ért, írjuk ki a győztes üzenetet és az új meccs indításához szükséges feliratot
+      if (gameOver) {
+        ctx.fillStyle = "white";
+        ctx.font = "40px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(winner, canvas.width / 2, canvas.height / 2);
+        ctx.font = "20px Arial";
+        ctx.fillText("Nyomd meg a space-t az új játékhoz!", canvas.width / 2, canvas.height / 2 + 40);
+      }
+    }
+
+    // Indítsuk el a játékot
+    initGame();
+    gameLoop();
+  </script>
+</body>
+</html>
